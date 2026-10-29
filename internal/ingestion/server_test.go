@@ -51,7 +51,7 @@ func newTestServer(t *testing.T, p Producer, maxBody int64) (http.Handler, *auth
 		t.Fatal(err)
 	}
 	s := NewServer(Config{EnrollmentKey: "enroll-me", MaxBodyBytes: maxBody, ProduceTimeout: time.Second},
-		slog.New(slog.NewTextHandler(io.Discard, nil)), signer, p, prometheus.NewRegistry())
+		slog.New(slog.NewTextHandler(io.Discard, nil)), signer, p, nil, prometheus.NewRegistry())
 	s.now = func() time.Time { return testNow }
 	return s.Handler(nil), signer
 }

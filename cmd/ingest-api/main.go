@@ -30,6 +30,18 @@ func run(log *slog.Logger) error {
 	enrollmentKey := env.Required("ENROLLMENT_KEY")
 	maxBody := env.Int("MAX_BODY_BYTES", 1<<20)
 	produceTimeout := env.Duration("PRODUCE_TIMEOUT", 5*time.Second)
+
+	// Log bundles. Leaving S3_ENDPOINT empty turns bundle uploads off.
+	s3Endpoint := env.String("S3_ENDPOINT", "")
+	s3AccessKey := env.String("S3_ACCESS_KEY", "")
+	s3SecretKey := env.String("S3_SECRET_KEY", "")
+	s3Bucket := env.String("S3_BUCKET", "log-bundles")
+	s3TLS := env.String("S3_USE_TLS", "false") == "true"
+	chunkSize := env.Int("BUNDLE_CHUNK_SIZE", 1<<20)
+	maxBundle := env.Int("MAX_BUNDLE_BYTES", 50<<20)
+	env.Check(s3Endpoint == "" || (s3AccessKey != "" && s3SecretKey != ""), "S3_ACCESS_KEY and S3_SECRET_KEY are required when S3_ENDPOINT is set")
+	env.Check(chunkSize > 0, "BUNDLE_CHUNK_SIZE must be positive")
+	env.Check(maxBundle > 0, "MAX_BUNDLE_BYTES must be positive")
 	if err := env.Err(); err != nil {
 		return err
 	}
@@ -44,15 +56,48 @@ func run(log *slog.Logger) error {
 	}
 	defer producer.Close()
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	var store ingestion.ObjectStore
+	if s3Endpoint != "" {
+		s3, err := ingestion.NewS3Store(s3Endpoint, s3AccessKey, s3SecretKey, s3Bucket, s3TLS)
+		if err != nil {
+			return err
+		}
+		store = s3
+		// Telemetry must not wait on the object store, so the bucket is
+		// created in the background. Bundle requests get 503 until it exists.
+		go ensureBucket(ctx, log, s3, s3Bucket)
+	} else {
+		log.Warn("S3_ENDPOINT not set; log bundle uploads are disabled")
+	}
+
 	reg := platform.NewRegistry()
 	srv := ingestion.NewServer(ingestion.Config{
 		EnrollmentKey:  enrollmentKey,
 		MaxBodyBytes:   int64(maxBody),
 		ProduceTimeout: produceTimeout,
-	}, log, signer, producer, reg)
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+		Bundles:        ingestion.BundleConfig{ChunkSize: int64(chunkSize), MaxBundleBytes: int64(maxBundle)},
+	}, log, signer, producer, store, reg)
 	log.Info("starting", "brokers", brokers)
 	return platform.Serve(ctx, log, addr, srv.Handler(platform.MetricsHandler(reg)))
+}
+
+func ensureBucket(ctx context.Context, log *slog.Logger, s3 *ingestion.S3Store, bucket string) {
+	for attempt := 1; ; attempt++ {
+		reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err := s3.EnsureBucket(reqCtx)
+		cancel()
+		if err == nil {
+			log.Info("object store ready", "bucket", bucket)
+			return
+		}
+		log.Warn("object store not ready, retrying", "bucket", bucket, "attempt", attempt, "err", err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
+	}
 }

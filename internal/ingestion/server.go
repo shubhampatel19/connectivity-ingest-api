@@ -23,6 +23,7 @@ type Config struct {
 	EnrollmentKey  string
 	MaxBodyBytes   int64
 	ProduceTimeout time.Duration
+	Bundles        BundleConfig
 }
 
 type Server struct {
@@ -30,12 +31,15 @@ type Server struct {
 	log      *slog.Logger
 	signer   *auth.Signer
 	producer Producer
+	store    ObjectStore // nil disables log bundle uploads
 	m        *metrics
 	now      func() time.Time
 }
 
-func NewServer(cfg Config, log *slog.Logger, signer *auth.Signer, p Producer, reg prometheus.Registerer) *Server {
-	return &Server{cfg: cfg, log: log, signer: signer, producer: p, m: newMetrics(reg), now: time.Now}
+// NewServer builds the API. A nil store turns the bundle routes off; devices
+// see 404 and keep their bundles spooled until the cloud supports them.
+func NewServer(cfg Config, log *slog.Logger, signer *auth.Signer, p Producer, store ObjectStore, reg prometheus.Registerer) *Server {
+	return &Server{cfg: cfg, log: log, signer: signer, producer: p, store: store, m: newMetrics(reg), now: time.Now}
 }
 
 // Handler wires the routes. metricsHandler may be nil (tests).
@@ -44,6 +48,12 @@ func (s *Server) Handler(metricsHandler http.Handler) http.Handler {
 	mux.Handle("POST /v1/register", s.instrument("register", http.HandlerFunc(s.handleRegister)))
 	mux.Handle("POST /v1/heartbeat", s.instrument("heartbeat", s.authenticate(http.HandlerFunc(s.handleHeartbeat))))
 	mux.Handle("POST /v1/telemetry", s.instrument("telemetry", s.authenticate(http.HandlerFunc(s.handleTelemetry))))
+	if s.store != nil {
+		mux.Handle("POST /v1/bundles", s.instrument("bundle_init", s.authenticate(http.HandlerFunc(s.handleBundleInit))))
+		mux.Handle("GET /v1/bundles/{bundle_id}", s.instrument("bundle_status", s.authenticate(http.HandlerFunc(s.handleBundleStatus))))
+		mux.Handle("PUT /v1/bundles/{bundle_id}/chunks/{index}", s.instrument("bundle_chunk", s.authenticate(http.HandlerFunc(s.handleBundleChunk))))
+		mux.Handle("POST /v1/bundles/{bundle_id}/complete", s.instrument("bundle_complete", s.authenticate(http.HandlerFunc(s.handleBundleComplete))))
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("GET /readyz", s.handleReady)
 	if metricsHandler != nil {
@@ -116,6 +126,10 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]int{"accepted": len(batch.Samples)})
 }
 
+// handleReady checks only Kafka, the dependency every request needs. The
+// object store is deliberately left out: if MinIO went down and readiness
+// followed it, the orchestrator would pull every replica out of rotation and
+// a log-upload outage would take telemetry down with it.
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
