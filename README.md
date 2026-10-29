@@ -47,7 +47,7 @@ On complete, the API streams the chunks into the final object while hashing them
 | 422 on complete | Assembled bundle doesn't match its declared SHA-256: give up |
 | 503 | Object store or Kafka unavailable: retry later |
 
-Readiness (`/readyz`) deliberately checks only Kafka. If it also checked the object store, a MinIO outage would pull every replica out of rotation and take telemetry down along with log uploads.
+Readiness (`/readyz`) deliberately checks only Kafka. If it also checked the object store, an object store outage would pull every replica out of rotation and take telemetry down along with log uploads.
 
 Leave `S3_ENDPOINT` unset and the bundle routes return 404; devices keep their bundles spooled until the cloud supports them.
 
@@ -64,6 +64,7 @@ Leave `S3_ENDPOINT` unset and the bundle routes return 404; devices keep their b
 | `S3_ENDPOINT` | unset (bundle uploads off) |
 | `S3_ACCESS_KEY` / `S3_SECRET_KEY` | required when `S3_ENDPOINT` is set |
 | `S3_BUCKET` | `log-bundles` |
+| `S3_REGION` | `us-east-1` |
 | `S3_USE_TLS` | `false` |
 | `BUNDLE_CHUNK_SIZE` | `1048576` |
 | `MAX_BUNDLE_BYTES` | `52428800` |

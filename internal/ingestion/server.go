@@ -127,7 +127,7 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleReady checks only Kafka, the dependency every request needs. The
-// object store is deliberately left out: if MinIO went down and readiness
+// object store is deliberately left out: if it went down and readiness
 // followed it, the orchestrator would pull every replica out of rotation and
 // a log-upload outage would take telemetry down with it.
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {

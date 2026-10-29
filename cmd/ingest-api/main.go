@@ -36,6 +36,7 @@ func run(log *slog.Logger) error {
 	s3AccessKey := env.String("S3_ACCESS_KEY", "")
 	s3SecretKey := env.String("S3_SECRET_KEY", "")
 	s3Bucket := env.String("S3_BUCKET", "log-bundles")
+	s3Region := env.String("S3_REGION", "us-east-1")
 	s3TLS := env.String("S3_USE_TLS", "false") == "true"
 	chunkSize := env.Int("BUNDLE_CHUNK_SIZE", 1<<20)
 	maxBundle := env.Int("MAX_BUNDLE_BYTES", 50<<20)
@@ -61,7 +62,7 @@ func run(log *slog.Logger) error {
 
 	var store ingestion.ObjectStore
 	if s3Endpoint != "" {
-		s3, err := ingestion.NewS3Store(s3Endpoint, s3AccessKey, s3SecretKey, s3Bucket, s3TLS)
+		s3, err := ingestion.NewS3Store(s3Endpoint, s3AccessKey, s3SecretKey, s3Bucket, s3Region, s3TLS)
 		if err != nil {
 			return err
 		}

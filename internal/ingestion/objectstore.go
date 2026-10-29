@@ -22,16 +22,21 @@ type ObjectStore interface {
 	Delete(ctx context.Context, key string) error
 }
 
-// S3Store implements ObjectStore on MinIO or any S3-compatible service.
+// S3Store implements ObjectStore on any S3-compatible service (SeaweedFS
+// locally, AWS S3 or similar in production).
 type S3Store struct {
 	cl     *minio.Client
 	bucket string
 }
 
-func NewS3Store(endpoint, accessKey, secretKey, bucket string, useTLS bool) (*S3Store, error) {
+// NewS3Store connects to an S3 endpoint. Setting the region explicitly stops
+// the client from issuing a GetBucketLocation call before its first request,
+// which some S3-compatible servers answer inconsistently.
+func NewS3Store(endpoint, accessKey, secretKey, bucket, region string, useTLS bool) (*S3Store, error) {
 	cl, err := minio.New(endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
 		Secure: useTLS,
+		Region: region,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create s3 client: %w", err)
