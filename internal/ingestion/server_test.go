@@ -15,8 +15,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/spr732/connectivity-contracts/wire"
-	"github.com/spr732/connectivity-ingest-api/internal/auth"
+	"github.com/shubhampatel19/connectivity-contracts/wire"
+	"github.com/shubhampatel19/connectivity-ingest-api/internal/auth"
 )
 
 type produced struct {

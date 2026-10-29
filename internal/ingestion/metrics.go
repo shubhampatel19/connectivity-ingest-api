@@ -8,6 +8,8 @@ import (
 type metrics struct {
 	requests        *prometheus.CounterVec
 	duration        *prometheus.HistogramVec
+	alertsAccepted  *prometheus.CounterVec
+	alertsRejected  prometheus.Counter
 	samplesAccepted prometheus.Counter
 	produceErrors   *prometheus.CounterVec
 	authFailures    prometheus.Counter
@@ -33,6 +35,14 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 			Help:    "HTTP request latency by route.",
 			Buckets: []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10},
 		}, []string{"route"}),
+		alertsAccepted: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "connectivity_ingest_alerts_accepted_total",
+			Help: "Device alerts published to Kafka, by severity.",
+		}, []string{"severity"}),
+		alertsRejected: f.NewCounter(prometheus.CounterOpts{
+			Name: "connectivity_ingest_alerts_rejected_total",
+			Help: "Device alerts refused as invalid (400). A spike usually means an agent release sends something the cloud doesn't accept.",
+		}),
 		samplesAccepted: f.NewCounter(prometheus.CounterOpts{
 			Name: "connectivity_ingest_samples_accepted_total",
 			Help: "Telemetry samples acknowledged to devices.",

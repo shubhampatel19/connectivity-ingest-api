@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spr732/connectivity-contracts/wire"
+	"github.com/shubhampatel19/connectivity-contracts/wire"
 )
 
 type BundleConfig struct {

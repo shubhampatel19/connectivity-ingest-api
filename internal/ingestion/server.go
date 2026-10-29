@@ -15,8 +15,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/spr732/connectivity-contracts/wire"
-	"github.com/spr732/connectivity-ingest-api/internal/auth"
+	"github.com/shubhampatel19/connectivity-contracts/wire"
+	"github.com/shubhampatel19/connectivity-ingest-api/internal/auth"
 )
 
 type Config struct {
@@ -48,6 +48,7 @@ func (s *Server) Handler(metricsHandler http.Handler) http.Handler {
 	mux.Handle("POST /v1/register", s.instrument("register", http.HandlerFunc(s.handleRegister)))
 	mux.Handle("POST /v1/heartbeat", s.instrument("heartbeat", s.authenticate(http.HandlerFunc(s.handleHeartbeat))))
 	mux.Handle("POST /v1/telemetry", s.instrument("telemetry", s.authenticate(http.HandlerFunc(s.handleTelemetry))))
+	mux.Handle("POST /v1/alerts", s.instrument("alerts", s.authenticate(http.HandlerFunc(s.handleAlert))))
 	if s.store != nil {
 		mux.Handle("POST /v1/bundles", s.instrument("bundle_init", s.authenticate(http.HandlerFunc(s.handleBundleInit))))
 		mux.Handle("GET /v1/bundles/{bundle_id}", s.instrument("bundle_status", s.authenticate(http.HandlerFunc(s.handleBundleStatus))))
@@ -124,6 +125,35 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	}
 	s.m.samplesAccepted.Add(float64(len(batch.Samples)))
 	writeJSON(w, http.StatusAccepted, map[string]int{"accepted": len(batch.Samples)})
+}
+
+// handleAlert accepts one device alert. 202 means the alert is in Kafka for
+// the case service, not that a case exists: whether it becomes one is the
+// case service's decision.
+func (s *Server) handleAlert(w http.ResponseWriter, r *http.Request) {
+	deviceID := deviceIDFrom(r.Context())
+
+	var alert wire.DeviceAlert
+	if !s.decode(w, r, 64<<10, &alert) {
+		return
+	}
+	if alert.DeviceID != deviceID {
+		writeError(w, http.StatusForbidden, "alert device_id does not match credentials")
+		return
+	}
+	if err := alert.Validate(s.now()); err != nil {
+		s.m.alertsRejected.Inc()
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	env := wire.AlertEnvelope{ReceivedAt: s.now().UTC(), Alert: alert}
+	if err := s.publish(r.Context(), wire.TopicAlerts, deviceID, env); err != nil {
+		writeUnavailable(w)
+		return
+	}
+	s.m.alertsAccepted.WithLabelValues(string(alert.Severity)).Inc()
+	writeJSON(w, http.StatusAccepted, wire.AlertAccepted{AlertID: alert.AlertID})
 }
 
 // handleReady checks only Kafka, the dependency every request needs. The

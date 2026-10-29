@@ -9,9 +9,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/spr732/connectivity-go-kit/platform"
-	"github.com/spr732/connectivity-ingest-api/internal/auth"
-	"github.com/spr732/connectivity-ingest-api/internal/ingestion"
+	"github.com/shubhampatel19/connectivity-go-kit/platform"
+	"github.com/shubhampatel19/connectivity-ingest-api/internal/auth"
+	"github.com/shubhampatel19/connectivity-ingest-api/internal/ingestion"
 )
 
 func main() {

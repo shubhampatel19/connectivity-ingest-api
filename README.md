@@ -2,7 +2,7 @@
 
 The cloud's front door for devices. It authenticates them, validates their payloads and writes everything to Kafka. It holds no state of its own, so it scales horizontally and restarts freely.
 
-Part of [Connectivity](https://github.com/spr732/connectivity-platform), a mock edge-to-cloud telemetry system built for practicing production debugging.
+Part of [Connectivity](https://github.com/shubhampatel19/connectivity-platform), a mock edge-to-cloud telemetry system built for practicing production debugging.
 
 ## Endpoints
 
@@ -11,6 +11,7 @@ Part of [Connectivity](https://github.com/spr732/connectivity-platform), a mock 
 | `POST /v1/register` | `X-Enrollment-Key` | Register a device; returns its token |
 | `POST /v1/heartbeat` | device token | Mark the device alive |
 | `POST /v1/telemetry` | device token | Submit a batch of samples |
+| `POST /v1/alerts` | device token | Report a fault the device detected; published to `device.alerts` |
 | `POST /v1/bundles` | device token | Start or resume a log bundle upload; returns chunk size and chunks received |
 | `GET /v1/bundles/{id}` | device token | Upload status |
 | `PUT /v1/bundles/{id}/chunks/{n}` | device token | One chunk, with `X-Chunk-SHA256` |
@@ -26,6 +27,12 @@ Device requests carry `X-Device-ID` and `Authorization: Bearer <token>`. Tokens 
 - **202 means durable.** A batch is acknowledged only after Kafka acks it with `acks=all`.
 - **Per-device ordering.** Records are keyed by device ID, so each device's data stays on one partition.
 - **Back-pressure.** When Kafka is unavailable the API returns 503 with `Retry-After`, and devices buffer locally.
+
+## Device alerts
+
+`POST /v1/alerts` validates the alert, checks that it belongs to the authenticated device, and publishes it to `device.alerts` keyed by device ID. A `202` means the alert is durable in Kafka, not that a support case exists: the [case service](https://github.com/shubhampatel19/connectivity-case-service) decides that.
+
+Unknown alert codes are accepted, because an agent can be newer than the cloud. The case service records them without opening a case. A rising `connectivity_ingest_alerts_rejected_total` usually means an agent release is sending something the cloud refuses.
 
 ## Log bundles
 
