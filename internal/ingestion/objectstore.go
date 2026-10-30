@@ -8,6 +8,10 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/shubhampatel19/connectivity-go-kit/platform"
 )
 
 var ErrObjectNotFound = errors.New("object not found")
@@ -60,12 +64,33 @@ func (s *S3Store) EnsureBucket(ctx context.Context) error {
 	return err
 }
 
-func (s *S3Store) Put(ctx context.Context, key string, r io.Reader, size int64) error {
-	_, err := s.cl.PutObject(ctx, s.bucket, key, r, size, minio.PutObjectOptions{ContentType: "application/octet-stream"})
+// span starts a client span for one S3 call. end records the error, if any.
+func (s *S3Store) span(ctx context.Context, op, key string) (context.Context, func(error)) {
+	ctx, span := platform.Tracer().Start(ctx, "s3 "+op,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attribute.String("aws.s3.bucket", s.bucket), attribute.String("aws.s3.key", key)))
+	return ctx, func(err error) {
+		platform.RecordError(ctx, err)
+		span.End()
+	}
+}
+
+func (s *S3Store) Put(ctx context.Context, key string, r io.Reader, size int64) (err error) {
+	ctx, end := s.span(ctx, "PutObject", key)
+	defer func() { end(err) }()
+	_, err = s.cl.PutObject(ctx, s.bucket, key, r, size, minio.PutObjectOptions{ContentType: "application/octet-stream"})
 	return err
 }
 
-func (s *S3Store) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+func (s *S3Store) Get(ctx context.Context, key string) (_ io.ReadCloser, err error) {
+	ctx, end := s.span(ctx, "GetObject", key)
+	defer func() {
+		if errors.Is(err, ErrObjectNotFound) {
+			end(nil) // an expected answer, not a failure
+			return
+		}
+		end(err)
+	}()
 	obj, err := s.cl.GetObject(ctx, s.bucket, key, minio.GetObjectOptions{})
 	if err != nil {
 		return nil, err
@@ -81,8 +106,10 @@ func (s *S3Store) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 	return obj, nil
 }
 
-func (s *S3Store) Exists(ctx context.Context, key string) (bool, error) {
-	_, err := s.cl.StatObject(ctx, s.bucket, key, minio.StatObjectOptions{})
+func (s *S3Store) Exists(ctx context.Context, key string) (_ bool, err error) {
+	ctx, end := s.span(ctx, "StatObject", key)
+	defer func() { end(err) }()
+	_, err = s.cl.StatObject(ctx, s.bucket, key, minio.StatObjectOptions{})
 	if err == nil {
 		return true, nil
 	}
@@ -92,7 +119,9 @@ func (s *S3Store) Exists(ctx context.Context, key string) (bool, error) {
 	return false, err
 }
 
-func (s *S3Store) List(ctx context.Context, prefix string) ([]string, error) {
+func (s *S3Store) List(ctx context.Context, prefix string) (_ []string, err error) {
+	ctx, end := s.span(ctx, "ListObjects", prefix)
+	defer func() { end(err) }()
 	var keys []string
 	for obj := range s.cl.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: true}) {
 		if obj.Err != nil {
@@ -103,7 +132,9 @@ func (s *S3Store) List(ctx context.Context, prefix string) ([]string, error) {
 	return keys, nil
 }
 
-func (s *S3Store) Delete(ctx context.Context, key string) error {
+func (s *S3Store) Delete(ctx context.Context, key string) (err error) {
+	ctx, end := s.span(ctx, "DeleteObject", key)
+	defer func() { end(err) }()
 	return s.cl.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{})
 }
 

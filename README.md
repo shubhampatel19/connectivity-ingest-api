@@ -58,6 +58,12 @@ Readiness (`/readyz`) deliberately checks only Kafka. If it also checked the obj
 
 Leave `S3_ENDPOINT` unset and the bundle routes return 404; devices keep their bundles spooled until the cloud supports them.
 
+## Tracing
+
+Each route gets a server span named after its pattern (`POST /v1/telemetry`, `PUT /v1/bundles/{bundle_id}/chunks/{index}`) that continues the device's trace from its `traceparent` header. Publishing to Kafka is a producer span covering the wait for `acks=all`, and the record carries the trace context in its headers, so the consumer's span joins the same trace. Object store calls get client spans. Requests forwarded by the site gateway record which gateway sent them (`gateway.id`) and how long the record waited on the gateway's disk (`gateway.queued_seconds`).
+
+Responses to traced requests include `X-Trace-ID`, and log lines written during them carry `trace_id`. Spans are exported only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set; see [go-kit](https://github.com/shubhampatel19/connectivity-go-kit#tracing).
+
 ## Configuration
 
 | Variable | Default |

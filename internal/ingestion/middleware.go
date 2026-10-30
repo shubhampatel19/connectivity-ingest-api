@@ -8,6 +8,11 @@ import (
 	"runtime/debug"
 	"strconv"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/shubhampatel19/connectivity-go-kit/platform"
 )
 
 type statusRecorder struct {
@@ -26,6 +31,10 @@ func (r *statusRecorder) WriteHeader(code int) {
 func (s *Server) instrument(route string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		annotateSpan(r)
+		if id := platform.TraceID(r.Context()); id != "" {
+			w.Header().Set("X-Trace-ID", id)
+		}
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
 		elapsed := time.Since(start)
@@ -48,6 +57,27 @@ func (s *Server) instrument(route string, next http.Handler) http.Handler {
 			"request_id", r.Header.Get("X-Request-ID"),
 		)
 	})
+}
+
+// annotateSpan adds what every device request says about itself to its
+// server span: which device, and for site B, which gateway sent it and how
+// long the gateway held it on disk first.
+func annotateSpan(r *http.Request) {
+	span := trace.SpanFromContext(r.Context())
+	if !span.IsRecording() {
+		return
+	}
+	if id := r.Header.Get("X-Device-ID"); id != "" {
+		span.SetAttributes(attribute.String("device.id", id))
+	}
+	if gw := r.Header.Get("X-Gateway-ID"); gw != "" {
+		span.SetAttributes(attribute.String("gateway.id", gw))
+	}
+	// A duration measured on the gateway's own clock, not a timestamp, so
+	// clock skew between the site and the cloud can't distort it.
+	if ms, err := strconv.ParseInt(r.Header.Get("X-Gateway-Queued-Ms"), 10, 64); err == nil && ms >= 0 {
+		span.SetAttributes(attribute.Float64("gateway.queued_seconds", float64(ms)/1000))
+	}
 }
 
 // requestID makes sure every request carries an ID that shows up in logs and
@@ -73,7 +103,7 @@ func (s *Server) recoverer(next http.Handler) http.Handler {
 				if v == http.ErrAbortHandler {
 					panic(v)
 				}
-				s.log.Error("panic in handler", "panic", v, "stack", string(debug.Stack()),
+				s.log.ErrorContext(r.Context(), "panic in handler", "panic", v, "stack", string(debug.Stack()),
 					"request_id", r.Header.Get("X-Request-ID"))
 				writeError(w, http.StatusInternalServerError, "internal error")
 			}

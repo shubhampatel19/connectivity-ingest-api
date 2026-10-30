@@ -47,6 +47,18 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
+	tracingCtx, cancelTracing := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownTracing, err := platform.InitTracing(tracingCtx, "ingest-api", log)
+	cancelTracing()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownTracing(ctx)
+	}()
+
 	signer, err := auth.NewSigner(secret)
 	if err != nil {
 		return err

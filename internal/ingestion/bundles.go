@@ -69,7 +69,7 @@ func (s *Server) handleBundleInit(w http.ResponseWriter, r *http.Request) {
 
 	m, found, err := s.loadManifest(ctx, req.BundleID)
 	if err != nil {
-		s.storeFailed(w, "get_manifest", err)
+		s.storeFailed(r.Context(), w, "get_manifest", err)
 		return
 	}
 	if found {
@@ -87,7 +87,7 @@ func (s *Server) handleBundleInit(w http.ResponseWriter, r *http.Request) {
 
 	done, err := s.store.Exists(ctx, bundleKey(deviceID, req.BundleID))
 	if err != nil {
-		s.storeFailed(w, "exists", err)
+		s.storeFailed(r.Context(), w, "exists", err)
 		return
 	}
 	if done {
@@ -98,7 +98,7 @@ func (s *Server) handleBundleInit(w http.ResponseWriter, r *http.Request) {
 	m = manifest{Request: req, ChunkSize: s.cfg.Bundles.ChunkSize, CreatedAt: s.now().UTC()}
 	body, _ := json.Marshal(m)
 	if err := s.store.Put(ctx, manifestKey(req.BundleID), bytes.NewReader(body), int64(len(body))); err != nil {
-		s.storeFailed(w, "put_manifest", err)
+		s.storeFailed(r.Context(), w, "put_manifest", err)
 		return
 	}
 	s.m.bundlesStarted.Inc()
@@ -117,7 +117,7 @@ func (s *Server) handleBundleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	m, found, err := s.loadManifest(r.Context(), bundleID)
 	if err != nil {
-		s.storeFailed(w, "get_manifest", err)
+		s.storeFailed(r.Context(), w, "get_manifest", err)
 		return
 	}
 	if found {
@@ -142,7 +142,7 @@ func (s *Server) handleBundleChunk(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	m, found, err := s.loadManifest(ctx, bundleID)
 	if err != nil {
-		s.storeFailed(w, "get_manifest", err)
+		s.storeFailed(r.Context(), w, "get_manifest", err)
 		return
 	}
 	if !found {
@@ -184,7 +184,7 @@ func (s *Server) handleBundleChunk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.Put(ctx, chunkKey(bundleID, index), bytes.NewReader(data), want); err != nil {
-		s.storeFailed(w, "put_chunk", err)
+		s.storeFailed(r.Context(), w, "put_chunk", err)
 		return
 	}
 	s.m.bundleBytes.Add(float64(want))
@@ -203,14 +203,14 @@ func (s *Server) handleBundleComplete(w http.ResponseWriter, r *http.Request) {
 
 	m, found, err := s.loadManifest(ctx, bundleID)
 	if err != nil {
-		s.storeFailed(w, "get_manifest", err)
+		s.storeFailed(r.Context(), w, "get_manifest", err)
 		return
 	}
 	if !found {
 		// Either never started, or already completed and cleaned up.
 		done, err := s.store.Exists(ctx, finalKey)
 		if err != nil {
-			s.storeFailed(w, "exists", err)
+			s.storeFailed(r.Context(), w, "exists", err)
 			return
 		}
 		if !done {
@@ -227,7 +227,7 @@ func (s *Server) handleBundleComplete(w http.ResponseWriter, r *http.Request) {
 
 	received, err := s.receivedChunks(ctx, bundleID)
 	if err != nil {
-		s.storeFailed(w, "list_chunks", err)
+		s.storeFailed(r.Context(), w, "list_chunks", err)
 		return
 	}
 	status := wire.BundleStatus{BundleID: bundleID, State: wire.BundleUploading, ChunkSize: m.ChunkSize,
@@ -241,7 +241,7 @@ func (s *Server) handleBundleComplete(w http.ResponseWriter, r *http.Request) {
 	// Don't assemble twice; go straight to publishing.
 	stored, err := s.store.Exists(ctx, finalKey)
 	if err != nil {
-		s.storeFailed(w, "exists", err)
+		s.storeFailed(r.Context(), w, "exists", err)
 		return
 	}
 	if !stored {
@@ -249,12 +249,12 @@ func (s *Server) handleBundleComplete(w http.ResponseWriter, r *http.Request) {
 		sum, err := s.assemble(ctx, m, finalKey)
 		if err != nil {
 			s.m.assemblyFailures.WithLabelValues("store").Inc()
-			s.storeFailed(w, "assemble", err)
+			s.storeFailed(r.Context(), w, "assemble", err)
 			return
 		}
 		if sum != m.Request.SHA256 {
 			s.m.assemblyFailures.WithLabelValues("checksum").Inc()
-			s.log.Error("assembled bundle does not match its declared checksum",
+			s.log.ErrorContext(ctx, "assembled bundle does not match its declared checksum",
 				"bundle_id", bundleID, "device_id", deviceID, "declared", m.Request.SHA256, "actual", sum)
 			_ = s.store.Delete(ctx, finalKey)
 			s.cleanupSession(ctx, m)
@@ -318,12 +318,12 @@ func (s *Server) assemble(ctx context.Context, m manifest, finalKey string) (str
 func (s *Server) cleanupSession(ctx context.Context, m manifest) {
 	for i := 0; i < m.chunkCount(); i++ {
 		if err := s.store.Delete(ctx, chunkKey(m.Request.BundleID, i)); err != nil {
-			s.log.Warn("leaving orphaned chunk", "bundle_id", m.Request.BundleID, "chunk", i, "err", err)
+			s.log.WarnContext(ctx, "leaving orphaned chunk", "bundle_id", m.Request.BundleID, "chunk", i, "err", err)
 		}
 	}
 	// The manifest goes last: while it exists, the session can still be resumed.
 	if err := s.store.Delete(ctx, manifestKey(m.Request.BundleID)); err != nil {
-		s.log.Warn("leaving orphaned manifest", "bundle_id", m.Request.BundleID, "err", err)
+		s.log.WarnContext(ctx, "leaving orphaned manifest", "bundle_id", m.Request.BundleID, "err", err)
 	}
 }
 
@@ -362,7 +362,7 @@ func (s *Server) receivedChunks(ctx context.Context, bundleID string) ([]int, er
 func (s *Server) writeSessionStatus(w http.ResponseWriter, r *http.Request, m manifest) {
 	received, err := s.receivedChunks(r.Context(), m.Request.BundleID)
 	if err != nil {
-		s.storeFailed(w, "list_chunks", err)
+		s.storeFailed(r.Context(), w, "list_chunks", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, wire.BundleStatus{
@@ -381,8 +381,8 @@ func completeStatus(bundleID string, size, chunkSize int64) wire.BundleStatus {
 }
 
 // storeFailed reports an object store outage as retryable.
-func (s *Server) storeFailed(w http.ResponseWriter, op string, err error) {
+func (s *Server) storeFailed(ctx context.Context, w http.ResponseWriter, op string, err error) {
 	s.m.storeErrors.WithLabelValues(op).Inc()
-	s.log.Error("object store operation failed", "op", op, "err", err)
+	s.log.ErrorContext(ctx, "object store operation failed", "op", op, "err", err)
 	writeUnavailable(w)
 }

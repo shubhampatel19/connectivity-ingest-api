@@ -14,8 +14,11 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/shubhampatel19/connectivity-contracts/wire"
+	"github.com/shubhampatel19/connectivity-go-kit/platform"
 	"github.com/shubhampatel19/connectivity-ingest-api/internal/auth"
 )
 
@@ -45,15 +48,20 @@ func NewServer(cfg Config, log *slog.Logger, signer *auth.Signer, p Producer, st
 // Handler wires the routes. metricsHandler may be nil (tests).
 func (s *Server) Handler(metricsHandler http.Handler) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("POST /v1/register", s.instrument("register", http.HandlerFunc(s.handleRegister)))
-	mux.Handle("POST /v1/heartbeat", s.instrument("heartbeat", s.authenticate(http.HandlerFunc(s.handleHeartbeat))))
-	mux.Handle("POST /v1/telemetry", s.instrument("telemetry", s.authenticate(http.HandlerFunc(s.handleTelemetry))))
-	mux.Handle("POST /v1/alerts", s.instrument("alerts", s.authenticate(http.HandlerFunc(s.handleAlert))))
+	// Each device route gets a server span named after its pattern, which
+	// continues the device's trace when it sent a traceparent header.
+	route := func(pattern, name string, h http.Handler) {
+		mux.Handle(pattern, platform.TraceHTTP(pattern, s.instrument(name, h)))
+	}
+	route("POST /v1/register", "register", http.HandlerFunc(s.handleRegister))
+	route("POST /v1/heartbeat", "heartbeat", s.authenticate(http.HandlerFunc(s.handleHeartbeat)))
+	route("POST /v1/telemetry", "telemetry", s.authenticate(http.HandlerFunc(s.handleTelemetry)))
+	route("POST /v1/alerts", "alerts", s.authenticate(http.HandlerFunc(s.handleAlert)))
 	if s.store != nil {
-		mux.Handle("POST /v1/bundles", s.instrument("bundle_init", s.authenticate(http.HandlerFunc(s.handleBundleInit))))
-		mux.Handle("GET /v1/bundles/{bundle_id}", s.instrument("bundle_status", s.authenticate(http.HandlerFunc(s.handleBundleStatus))))
-		mux.Handle("PUT /v1/bundles/{bundle_id}/chunks/{index}", s.instrument("bundle_chunk", s.authenticate(http.HandlerFunc(s.handleBundleChunk))))
-		mux.Handle("POST /v1/bundles/{bundle_id}/complete", s.instrument("bundle_complete", s.authenticate(http.HandlerFunc(s.handleBundleComplete))))
+		route("POST /v1/bundles", "bundle_init", s.authenticate(http.HandlerFunc(s.handleBundleInit)))
+		route("GET /v1/bundles/{bundle_id}", "bundle_status", s.authenticate(http.HandlerFunc(s.handleBundleStatus)))
+		route("PUT /v1/bundles/{bundle_id}/chunks/{index}", "bundle_chunk", s.authenticate(http.HandlerFunc(s.handleBundleChunk)))
+		route("POST /v1/bundles/{bundle_id}/complete", "bundle_complete", s.authenticate(http.HandlerFunc(s.handleBundleComplete)))
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("GET /readyz", s.handleReady)
@@ -118,6 +126,10 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	trace.SpanFromContext(r.Context()).SetAttributes(
+		attribute.String("batch.id", batch.BatchID),
+		attribute.Int("batch.samples", len(batch.Samples)),
+	)
 	env := wire.TelemetryEnvelope{ReceivedAt: s.now().UTC(), Batch: batch}
 	if err := s.publish(r.Context(), wire.TopicTelemetry, deviceID, env); err != nil {
 		writeUnavailable(w)
@@ -147,6 +159,10 @@ func (s *Server) handleAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	trace.SpanFromContext(r.Context()).SetAttributes(
+		attribute.String("alert.id", alert.AlertID),
+		attribute.String("alert.code", string(alert.Code)),
+	)
 	env := wire.AlertEnvelope{ReceivedAt: s.now().UTC(), Alert: alert}
 	if err := s.publish(r.Context(), wire.TopicAlerts, deviceID, env); err != nil {
 		writeUnavailable(w)
@@ -181,7 +197,7 @@ func (s *Server) publish(ctx context.Context, topic, key string, v any) error {
 	defer cancel()
 	if err := s.producer.Produce(ctx, topic, []byte(key), payload); err != nil {
 		s.m.produceErrors.WithLabelValues(topic).Inc()
-		s.log.Error("kafka produce failed", "topic", topic, "key", key, "err", err)
+		s.log.ErrorContext(ctx, "kafka produce failed", "topic", topic, "key", key, "err", err)
 		return err
 	}
 	return nil
