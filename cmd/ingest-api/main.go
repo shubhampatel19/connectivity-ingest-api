@@ -38,11 +38,18 @@ func run(log *slog.Logger) error {
 	s3Bucket := env.String("S3_BUCKET", "log-bundles")
 	s3Region := env.String("S3_REGION", "us-east-1")
 	s3TLS := env.String("S3_USE_TLS", "false") == "true"
-	chunkSize := env.Int("BUNDLE_CHUNK_SIZE", 1<<20)
+	// 256 KiB: at 16 KB/s, a thin site link, a chunk takes 16 seconds. With
+	// 1 MiB chunks it took over a minute, longer than any timeout allowed,
+	// so on such a link no bundle could ever be uploaded.
+	chunkSize := env.Int("BUNDLE_CHUNK_SIZE", 256<<10)
+	chunkTimeout := env.Duration("BUNDLE_CHUNK_TIMEOUT", 2*time.Minute)
+	completeTimeout := env.Duration("BUNDLE_COMPLETE_TIMEOUT", 2*time.Minute)
+	maxInFlight := env.Int("MAX_IN_FLIGHT", 512)
 	maxBundle := env.Int("MAX_BUNDLE_BYTES", 50<<20)
 	env.Check(s3Endpoint == "" || (s3AccessKey != "" && s3SecretKey != ""), "S3_ACCESS_KEY and S3_SECRET_KEY are required when S3_ENDPOINT is set")
 	env.Check(chunkSize > 0, "BUNDLE_CHUNK_SIZE must be positive")
 	env.Check(maxBundle > 0, "MAX_BUNDLE_BYTES must be positive")
+	env.Check(maxInFlight >= 0, "MAX_IN_FLIGHT must not be negative (0 disables the cap)")
 	if err := env.Err(); err != nil {
 		return err
 	}
@@ -91,7 +98,11 @@ func run(log *slog.Logger) error {
 		EnrollmentKey:  enrollmentKey,
 		MaxBodyBytes:   int64(maxBody),
 		ProduceTimeout: produceTimeout,
-		Bundles:        ingestion.BundleConfig{ChunkSize: int64(chunkSize), MaxBundleBytes: int64(maxBundle)},
+		MaxInFlight:    maxInFlight,
+		Bundles: ingestion.BundleConfig{
+			ChunkSize: int64(chunkSize), MaxBundleBytes: int64(maxBundle),
+			ChunkTimeout: chunkTimeout, CompleteTimeout: completeTimeout,
+		},
 	}, log, signer, producer, store, reg)
 	log.Info("starting", "brokers", brokers)
 	return platform.Serve(ctx, log, addr, srv.Handler(platform.MetricsHandler(reg)))

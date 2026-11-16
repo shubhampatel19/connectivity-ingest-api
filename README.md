@@ -4,6 +4,8 @@ The cloud's front door for devices. It authenticates them, validates their paylo
 
 Part of [Connectivity](https://github.com/shubhampatel19/connectivity-platform), a mock edge-to-cloud telemetry system built for practicing production debugging.
 
+See [docs/DESIGN.md](docs/DESIGN.md) for how the code is put together and why.
+
 ## Endpoints
 
 | Route | Auth | Purpose |
@@ -27,6 +29,8 @@ Device requests carry `X-Device-ID` and `Authorization: Bearer <token>`. Tokens 
 - **202 means durable.** A batch is acknowledged only after Kafka acks it with `acks=all`.
 - **Per-device ordering.** Records are keyed by device ID, so each device's data stays on one partition.
 - **Back-pressure.** When Kafka is unavailable the API returns 503 with `Retry-After`, and devices buffer locally.
+- **Load shedding.** At most `MAX_IN_FLIGHT` device requests are handled at once. Beyond that, requests get an immediate 503 with `Retry-After` (`connectivity_ingest_requests_shed_total`), so a slow Kafka can't turn into a pile of timed-out requests and retries.
+- **Nothing a consumer can't store is accepted.** IDs, metric names and free text are checked for character set before they reach Kafka (see the contracts' design doc). A NUL byte gets one device a 400 instead of stalling a partition.
 
 ## Device alerts
 
@@ -54,6 +58,8 @@ On complete, the API streams the chunks into the final object while hashing them
 | 422 on complete | Assembled bundle doesn't match its declared SHA-256: give up |
 | 503 | Object store or Kafka unavailable: retry later |
 
+Chunks are 256 KiB and each may take up to `BUNDLE_CHUNK_TIMEOUT` to arrive, so an upload works down to about 2 KB/s. The server's ordinary 15-second read timeout, which suits small JSON bodies, is replaced for these two routes only.
+
 Readiness (`/readyz`) deliberately checks only Kafka. If it also checked the object store, an object store outage would pull every replica out of rotation and take telemetry down along with log uploads.
 
 Leave `S3_ENDPOINT` unset and the bundle routes return 404; devices keep their bundles spooled until the cloud supports them.
@@ -79,5 +85,8 @@ Responses to traced requests include `X-Trace-ID`, and log lines written during 
 | `S3_BUCKET` | `log-bundles` |
 | `S3_REGION` | `us-east-1` |
 | `S3_USE_TLS` | `false` |
-| `BUNDLE_CHUNK_SIZE` | `1048576` |
+| `BUNDLE_CHUNK_SIZE` | `262144` (an upload in progress keeps the size it started with) |
+| `BUNDLE_CHUNK_TIMEOUT` | `2m`: how long one chunk's bytes may take to arrive |
+| `BUNDLE_COMPLETE_TIMEOUT` | `2m`: how long assembly and verification may take |
+| `MAX_IN_FLIGHT` | `512` (0 disables the cap) |
 | `MAX_BUNDLE_BYTES` | `52428800` |

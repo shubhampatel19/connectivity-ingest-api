@@ -26,7 +26,11 @@ type Config struct {
 	EnrollmentKey  string
 	MaxBodyBytes   int64
 	ProduceTimeout time.Duration
-	Bundles        BundleConfig
+	// MaxInFlight caps device requests being handled at once. Past it, new
+	// requests get 503 with Retry-After straight away instead of queueing
+	// behind a slow Kafka until everything times out. Zero means no cap.
+	MaxInFlight int
+	Bundles     BundleConfig
 }
 
 type Server struct {
@@ -37,12 +41,17 @@ type Server struct {
 	store    ObjectStore // nil disables log bundle uploads
 	m        *metrics
 	now      func() time.Time
+	inFlight chan struct{} // nil when MaxInFlight is zero
 }
 
 // NewServer builds the API. A nil store turns the bundle routes off; devices
 // see 404 and keep their bundles spooled until the cloud supports them.
 func NewServer(cfg Config, log *slog.Logger, signer *auth.Signer, p Producer, store ObjectStore, reg prometheus.Registerer) *Server {
-	return &Server{cfg: cfg, log: log, signer: signer, producer: p, store: store, m: newMetrics(reg), now: time.Now}
+	s := &Server{cfg: cfg, log: log, signer: signer, producer: p, store: store, m: newMetrics(reg), now: time.Now}
+	if cfg.MaxInFlight > 0 {
+		s.inFlight = make(chan struct{}, cfg.MaxInFlight)
+	}
+	return s
 }
 
 // Handler wires the routes. metricsHandler may be nil (tests).
@@ -51,7 +60,7 @@ func (s *Server) Handler(metricsHandler http.Handler) http.Handler {
 	// Each device route gets a server span named after its pattern, which
 	// continues the device's trace when it sent a traceparent header.
 	route := func(pattern, name string, h http.Handler) {
-		mux.Handle(pattern, platform.TraceHTTP(pattern, s.instrument(name, h)))
+		mux.Handle(pattern, platform.TraceHTTP(pattern, s.instrument(name, s.shed(name, h))))
 	}
 	route("POST /v1/register", "register", http.HandlerFunc(s.handleRegister))
 	route("POST /v1/heartbeat", "heartbeat", s.authenticate(http.HandlerFunc(s.handleHeartbeat)))
@@ -83,8 +92,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, 64<<10, &req) {
 		return
 	}
-	if req.DeviceID == "" {
-		writeError(w, http.StatusBadRequest, "device_id is required")
+	// Every field of a registration ends up in the devices table.
+	if err := req.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 

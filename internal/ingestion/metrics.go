@@ -21,6 +21,7 @@ type metrics struct {
 	assemblyFailures      *prometheus.CounterVec
 	assemblyDuration      prometheus.Histogram
 	storeErrors           *prometheus.CounterVec
+	shed                  *prometheus.CounterVec
 }
 
 func newMetrics(reg prometheus.Registerer) *metrics {
@@ -84,5 +85,9 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 			Name: "connectivity_ingest_object_store_errors_total",
 			Help: "Failed object store operations, by operation.",
 		}, []string{"op"}),
+		shed: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "connectivity_ingest_requests_shed_total",
+			Help: "Device requests refused with 503 because MAX_IN_FLIGHT were already being handled, by route.",
+		}, []string{"route"}),
 	}
 }

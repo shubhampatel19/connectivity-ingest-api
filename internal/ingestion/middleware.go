@@ -25,6 +25,33 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap lets http.ResponseController reach the connection, which the bundle
+// handlers need to extend their deadlines.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+// shed refuses a device request when MaxInFlight are already being handled.
+//
+// Without a cap, a slow dependency makes every request slow, devices time
+// out and retry, and the retries pile onto requests that are still running:
+// the service does more and more work and completes less and less of it. A
+// fast 503 with Retry-After keeps the requests that are admitted fast, and
+// tells the rest of the fleet to back off.
+func (s *Server) shed(route string, next http.Handler) http.Handler {
+	if s.inFlight == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case s.inFlight <- struct{}{}:
+			defer func() { <-s.inFlight }()
+			next.ServeHTTP(w, r)
+		default:
+			s.m.shed.WithLabelValues(route).Inc()
+			writeUnavailable(w)
+		}
+	})
+}
+
 // instrument records metrics and an access log line for one named route.
 // Successful requests log at debug so steady-state traffic doesn't drown the
 // lines you need during an incident.

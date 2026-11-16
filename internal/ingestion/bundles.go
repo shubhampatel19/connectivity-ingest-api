@@ -32,6 +32,27 @@ import (
 type BundleConfig struct {
 	ChunkSize      int64
 	MaxBundleBytes int64
+	// ChunkTimeout is how long one chunk's bytes may take to arrive. The
+	// server's ordinary read timeout suits small JSON bodies; a chunk coming
+	// up a thin site link needs far longer, and a chunk that can never fit
+	// inside the timeout can never be uploaded at all. Zero keeps the
+	// server's default.
+	ChunkTimeout time.Duration
+	// CompleteTimeout is how long assembling and verifying a bundle may
+	// take before the response is written. Zero keeps the server's default.
+	CompleteTimeout time.Duration
+}
+
+// extendDeadlines replaces the server-wide read and write deadlines for this
+// one request. Recorders used in tests don't support it, which is fine.
+func extendDeadlines(w http.ResponseWriter, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	rc := http.NewResponseController(w)
+	deadline := time.Now().Add(d)
+	_ = rc.SetReadDeadline(deadline)
+	_ = rc.SetWriteDeadline(deadline)
 }
 
 type manifest struct {
@@ -159,6 +180,7 @@ func (s *Server) handleBundleChunk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	want := wire.ChunkLen(m.Request.SizeBytes, m.ChunkSize, index)
+	extendDeadlines(w, s.cfg.Bundles.ChunkTimeout)
 	r.Body = http.MaxBytesReader(w, r.Body, want)
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -200,6 +222,7 @@ func (s *Server) handleBundleComplete(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	finalKey := bundleKey(deviceID, bundleID)
+	extendDeadlines(w, s.cfg.Bundles.CompleteTimeout)
 
 	m, found, err := s.loadManifest(ctx, bundleID)
 	if err != nil {
